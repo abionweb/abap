@@ -1,0 +1,9 @@
+iframe.code {
+border-width: 5px;
+border-color: gray;
+width: 40%;
+max-height: 80px;
+overflow-y: auto;
+padding: 10px;
+margin: 10px;
+}

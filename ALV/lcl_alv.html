@@ -1,0 +1,192 @@
+CLASS lcl_alv DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS: prepare_alv
+                 , show_screen IMPORTING iv_src_num TYPE i
+                 , set_data IMPORTING ir_data TYPE REF TO data
+                 .
+  PRIVATE SECTION.
+
+    CLASS-DATA: mr_data TYPE REF TO data
+              , mo_docking_container TYPE REF TO cl_gui_docking_container
+              , mo_alv               TYPE REF TO cl_gui_alv_grid
+              , ms_layout            TYPE lvc_s_layo
+              , mt_fieldcat          TYPE lvc_t_fcat
+	      , mt_f4                TYPE lvc_t_f4
+              .
+
+    CLASS-METHODS: handle_user_command FOR EVENT user_command OF cl_gui_alv_grid
+                                       IMPORTING e_ucomm
+                 , handle_toolbar      FOR EVENT toolbar OF cl_gui_alv_grid
+                                       IMPORTING e_object e_interactive
+                 , prepare_layout
+                 , prepare_fieldcat
+                 , prepare_f4
+                 .
+ENDCLASS.
+
+CLASS lcl_alv IMPLEMENTATION.
+
+  METHOD prepare_alv.
+    IF mo_docking_container IS INITIAL.
+      mo_docking_container = NEW #( repid     = sy-repid
+                                    dynnr     = sy-dynnr
+                                    side      = cl_gui_docking_container=>dock_at_left
+                                    extension = 1700 ).
+      mo_alv = NEW #( i_parent = mo_docking_container ).
+
+      prepare_layout( ).
+      prepare_fieldcat( ).
+      prepare_f4( ).
+
+      SET HANDLER handle_toolbar      FOR mo_alv.
+      SET HANDLER handle_user_command FOR mo_alv.
+      SET HANDLER handle_data_changed FOR mo_alv.
+      
+      mo_alv->register_f4_for_fields( mt_f4 ).
+
+      ASSIGN mr_data->* TO FIELD-SYMBOL(<lt_data>).
+      mo_alv->set_table_for_first_display(
+        EXPORTING
+          is_layout                     = ms_layout
+*         is_variant                    = gs_variant
+          i_save                        = 'A'
+          i_bypassing_buffer            = 'X'
+        CHANGING
+          it_outtab                     = <lt_data>
+          it_fieldcatalog               = mt_fieldcat
+        EXCEPTIONS
+          invalid_parameter_combination = 1
+          program_error                 = 2
+          too_many_lines                = 3
+          OTHERS                        = 4 ).
+      IF sy-subrc NE 0.
+        MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+              WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+      ENDIF.
+
+    ELSE.
+      mo_alv->refresh_table_display( ).
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD show_screen.
+    FIELD-SYMBOLS: <lt_data> TYPE ANY TABLE
+                 .
+    ASSIGN mr_data->* TO <lt_data>.
+    IF <lt_data> IS ASSIGNED AND LINES( <lt_data> ) > 0.
+      CALL SCREEN iv_src_num. "101.
+    ELSE.
+      MESSAGE s001(zalv_template_text) DISPLAY LIKE 'E'. "Нет данных
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD handle_user_command.
+
+    CASE e_ucomm.
+      WHEN 'SHOWLOG'.
+      WHEN OTHERS.
+    ENDCASE.
+
+  ENDMETHOD.
+
+  METHOD handle_toolbar.
+        CONSTANTS: lc_separator TYPE i VALUE 3.
+* разделитель
+    APPEND VALUE stb_button( butn_type = lc_separator ) TO e_object->mt_toolbar.
+
+* Кнопка "Проводка"
+    APPEND VALUE stb_button( function = 'POSTING'
+                             icon = icon_error_protocol
+                             quickinfo = 'Проводка'
+                             text = 'Проводка' ) TO e_object->mt_toolbar.
+  ENDMETHOD.
+
+  METHOD handle_data_changed.
+    DATA: lv_refresh TYPE flag.
+    FIELD-SYMBOLS: <lt_data> TYPE STANDARD TABLE.
+    DATA(lr_plantype) = lcl_utl=>get_lr_plantype( ).
+    DATA(lr_ekgrp)    = lcl_utl=>get_lr_ekgrp( ).
+    LOOP AT er_data_changed->mt_mod_cells ASSIGNING FIELD-SYMBOL(<ls_mod_cells>).
+      IF <ls_mod_cells>-fieldname = 'ZEPLANTYPE' AND <ls_mod_cells>-value NOT IN lr_plantype.
+        er_data_changed->add_protocol_entry( i_msgid     =     'Z_DL_UPLOAD'
+                                             i_msgty     =     'E'
+                                             i_msgno     =     '008'
+                                             i_fieldname =     'ZEPLANTYPE'
+                                             i_row_id    =     <ls_mod_cells>-row_id ).
+*        <ls_mod_cells>-error = abap_true.
+      ENDIF.
+      IF <ls_mod_cells>-fieldname = 'EKGRP'.
+        IF <ls_mod_cells>-value NOT IN lr_ekgrp.
+        er_data_changed->add_protocol_entry( i_msgid     =     'Z_DL_UPLOAD'
+                                             i_msgty     =     'E'
+                                             i_msgno     =     '009'
+                                             i_fieldname =     'ZEPLANTYPE'
+                                             i_row_id    =     <ls_mod_cells>-row_id ).
+        ELSE.
+          ASSIGN mr_data->* TO <lt_data>.
+          ASSIGN COMPONENT 'EKNAM' OF STRUCTURE <lt_data>[ <ls_mod_cells>-row_id ] TO FIELD-SYMBOL(<lv_eknam>).
+          <lv_eknam> = lcl_utl=>get_eknam( CONV ekgrp( <ls_mod_cells>-value ) ).
+          lv_refresh = abap_true.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+    IF lv_refresh = abap_true.
+      mo_alv->refresh_table_display( i_soft_refresh = 'X' ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD prepare_layout.
+
+    ms_layout-zebra      = 'X'.
+    ms_layout-cwidth_opt = 'X'.
+    ms_layout-smalltitle = 'X'.
+    ms_layout-sel_mode   = 'A'.
+    ms_layout-stylefname = 'STYLE'.
+
+  ENDMETHOD.                    "prepare_layout
+
+  METHOD prepare_fieldcat.
+
+    DATA: lr_fname TYPE RANGE OF lvc_fname.
+    ASSIGN mr_data->* TO FIELD-SYMBOL(<lt_data>).
+    TRY.
+      cl_salv_table=>factory(
+        IMPORTING
+          r_salv_table = DATA(lo_table)
+        CHANGING
+          t_table = <lt_data> ).
+      CATCH cx_salv_msg.
+    ENDTRY.
+    DATA(lo_cols) = lo_table->get_columns( ).
+    DATA(lo_aggr) = lo_table->get_aggregations( ).
+    CALL METHOD cl_salv_controller_metadata=>get_lvc_fieldcatalog
+      EXPORTING
+        r_columns      = lo_cols
+        r_aggregations = lo_aggr
+      RECEIVING
+        t_fieldcatalog = mt_fieldcat.
+    FREE: lo_table, lo_cols, lo_aggr.
+
+    LOOP AT mt_fieldcat ASSIGNING <ls_fcat>.
+      CASE <ls_fcat>-fieldname.
+*        WHEN 'VNNUM'.
+*          _fc 'Номер договора'.
+*          _fc 'Статус'.
+**          <fs_fcat>-edit = 'X'.
+*        WHEN 'STATUS'.
+*          <fs_fcat>-no_out = abap_true.
+        WHEN OTHERS.
+      ENDCASE.
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD prepare_f4.
+    INSERT VALUE #( fieldname = 'ZEPLANTYPE' register = abap_true ) INTO TABLE mt_f4.
+    INSERT VALUE #( fieldname = 'EKGRP' register = abap_true ) INTO TABLE mt_f4.
+  ENDMETHOD.
+
+  METHOD set_data.
+    mr_data = ir_data.
+  ENDMETHOD.
+ENDCLASS.
